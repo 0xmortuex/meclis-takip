@@ -1,6 +1,6 @@
 // Ağ öncelikli: internet varsa her zaman en yeni sürüm, yoksa önbellekten açılır.
-const CACHE = 'meclis-v1';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
+const CACHE = 'meclis-v2';
+const FILES = ['./', './index.html', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './fonts/atkinson-hyperlegible-next-latin.woff2', './fonts/atkinson-hyperlegible-next-latin-ext.woff2', './fonts/bricolage-grotesque-latin.woff2', './fonts/bricolage-grotesque-latin-ext.woff2'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(
