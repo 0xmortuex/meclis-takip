@@ -261,7 +261,25 @@ label.chk{display:flex;gap:10px;align-items:center;font-weight:400;font-size:1re
   #printSheet ol{padding-left:22pt}
   #printSheet li{margin-bottom:10pt;break-inside:avoid}
   #printSheet li small{display:block;color:#444}
+  #printSheet h2{font:700 14pt Georgia,serif;margin:14pt 0 4pt;border-bottom:1px solid #999;padding-bottom:2pt}
+  #printSheet ul{margin:0;padding-left:18pt}
+  #printSheet ul li{margin-bottom:3pt}
+  #printSheet .poster{font-family:var(--body)}
+  #printSheet .poster h1{font:750 34pt var(--display);font-stretch:85%;text-align:left}
+  #printSheet .poster .sub{text-align:left;margin-bottom:12pt}
 }
+/* yazdırma sayfası her zaman açık temayla basılır */
+#printSheet{--paper:#fff;--sheet:#fff;--ink:#14213D;--mute:#59637A;--rule:#D5DBE6;--blue:#2142C8;--hl:#FFE45C;--red:#C81E36;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+/* tamamlanınca kırmızı kalemle çizilen onay işareti */
+.orow,.pc{position:relative}
+.tickdraw{position:absolute;width:40px;height:40px;stroke:var(--red);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;opacity:0}
+.orow>.tickdraw{right:176px;top:0}
+.pc>.tickdraw{right:100px;top:8px}
+@media(prefers-reduced-motion:no-preference){
+  .tickdraw{stroke-dasharray:34;stroke-dashoffset:34;opacity:1;animation:draw .45s .05s ease-out forwards,fade .4s 1.8s forwards}
+}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fade{to{opacity:0}}
 </style>
 </head>
 <body>
@@ -291,8 +309,10 @@ const LETTERS = 'ABCDE';
 const EVENT_TYPES = ['Etkinlik', 'Toplantı', 'Turnuva', 'Gezi', 'Diğer'];
 const IDEA_STATUSES = ['Yeni', 'İnceleniyor', 'Kabul edildi', 'Reddedildi', 'Söze dönüştü'];
 const NAV = { today: ['Bugün', 'sun'], promises: ['Sözler', 'checks'], calendar: ['Takvim', 'cal'], meetings: ['Toplantılar', 'users'],
-  decisions: ['Kararlar', 'doc'], ideas: ['Fikirler', 'bulb'], public: ['Öğrenci görünümü', 'eye'] };
-const PRIMARY = ['today', 'promises', 'calendar', 'meetings'], SECOND = ['decisions', 'ideas', 'public'];
+  decisions: ['Kararlar', 'doc'], ideas: ['Fikirler', 'bulb'], report: ['Haftalık rapor', 'chart'], public: ['Öğrenci görünümü', 'eye'] };
+const PRIMARY = ['today', 'promises', 'calendar', 'meetings'], SECOND = ['decisions', 'ideas', 'report', 'public'];
+const REPEATS = { weekly: 'Her hafta', biweekly: 'İki haftada bir', monthly: 'Her ay' };
+const TICK = '<svg class="tickdraw" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5l5 5L20 6"/></svg>';
 const STALE_DAYS = 14, BACKUP_DAYS = 7;
 
 /* ---------- yardımcılar ---------- */
@@ -336,6 +356,9 @@ const ICONS = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   coin: '<circle cx="12" cy="12" r="9"/><path d="M12 7v10M9 10c0-1.3 1.3-2 3-2s3 .8 3 2-1.5 1.7-3 2-3 .8-3 2 1.3 2 3 2 3-.7 3-2"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  img: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
   up2: '<path d="m6 15 6-6 6 6"/>',
   down2: '<path d="m6 9 6 6 6-6"/>'
 };
@@ -384,6 +407,7 @@ function normalize(d) {
     p.budget = +p.budget || 0; p.spent = +p.spent || 0; p.autoProgress = !!p.autoProgress; p.upd ??= Date.now();
   });
   d.meetings.forEach(m => { m.actions ??= []; m.actions.forEach(a => { a.id ??= uid(); }); });
+  d.events.forEach(e => { e.repeat ??= ''; e.until ??= ''; });
   return d;
 }
 function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
@@ -411,6 +435,25 @@ const lastTouch = p => Math.max(p.upd || 0, ...p.notes.map(n => n.t));
 const pTitle = id => state.promises.find(p => p.id === id)?.title;
 const find = (arr, id) => arr.find(x => x.id === id);
 const byDate = (a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || ''));
+// Tekrarlayan etkinlikler: kayıt tek, günler kurala göre hesaplanır
+function evMatches(e, ds) {
+  if (ds < e.date || (e.until && ds > e.until)) return false;
+  if (!e.repeat) return ds === e.date;
+  const n = dayDiff(e.date, ds);
+  if (e.repeat === 'weekly') return n % 7 === 0;
+  if (e.repeat === 'biweekly') return n % 14 === 0;
+  if (e.repeat === 'monthly') return parse(ds).getDate() === parse(e.date).getDate();
+  throw new Error('Bilinmeyen tekrar türü: ' + e.repeat);
+}
+const eventsOn = ds => state.events.filter(e => evMatches(e, ds)).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+function eventsBetween(from, to) {
+  const out = [];
+  for (let d = parse(from); ymd(d) <= to; d = addDays(d, 1)) {
+    const ds = ymd(d);
+    state.events.forEach(e => { if (evMatches(e, ds)) out.push({ ...e, date: ds }); });
+  }
+  return out.sort(byDate);
+}
 const stIdx = p => Math.max(0, STATUSES.indexOf(p.status));
 
 function recalc(p) {
@@ -422,7 +465,7 @@ function setStatus(p, idx) {
   if (old === s) return;
   p.status = s;
   p.notes.push({ t: Date.now(), text: `Durum değişti: ${old} → ${s}` });
-  if (s === 'Tamamlandı') p.progress = 100; else recalc(p);
+  if (s === 'Tamamlandı') { p.progress = 100; ui.celebrate = p.id; toast(`Tamamlandı: ${p.title}`); } else recalc(p);
   touch(p);
 }
 
@@ -463,7 +506,7 @@ function viewToday() {
   const late = open.filter(isLate);
   const horizon = ymd(addDays(new Date(), 14)), week = ymd(addDays(new Date(), 7));
   const upcoming = [
-    ...state.events.filter(e => e.date >= t && e.date <= horizon).map(e => ({ date: e.date, time: e.time, label: e.title, kind: 'ev', tag: e.type })),
+    ...eventsBetween(t, horizon).map(e => ({ date: e.date, time: e.time, label: e.title, kind: 'ev', tag: e.type })),
     ...open.filter(p => p.target >= t && p.target <= horizon).map(p => ({ date: p.target, label: p.title, kind: 'pt', tag: 'Hedef tarih' }))
   ].sort(byDate);
   const actions = state.meetings.flatMap(m => m.actions.filter(a => !a.done).map(a => ({ ...a, mdate: m.date })));
@@ -472,7 +515,7 @@ function viewToday() {
   const lastExp = +localStorage.getItem(EXPORT_KEY) || 0;
   const needBackup = daysSince(lastExp) >= BACKUP_DAYS;
   const h = new Date().getHours(), greet = h < 11 ? 'Günaydın' : h < 18 ? 'İyi günler' : 'İyi akşamlar';
-  const weekEv = state.events.filter(e => e.date >= t && e.date <= week).length;
+  const weekEv = eventsBetween(t, week).length;
   const bits = [late.length && `${late.length} geciken söz`, actions.length && `${actions.length} açık görev`, weekEv && `bu hafta ${weekEv} etkinlik`].filter(Boolean);
   const sec = (title, rows, empty, cls = '') => `<section class="sheet ${cls}"><h2>${title}</h2>${rows || `<p class="hint">${empty}</p>`}</section>`;
   const row = (l, r = '') => `<div class="row2"><div>${l}</div><div class="meta">${r}</div></div>`;
@@ -558,7 +601,7 @@ function promiseForm(p) {
 /* ---------- Takvim ---------- */
 function dayItems(d) {
   return {
-    ev: state.events.filter(e => e.date === d).sort(byDate),
+    ev: eventsOn(d),
     mt: state.meetings.filter(m => m.date === d),
     pt: state.promises.filter(p => p.target === d && p.status !== 'Tamamlandı')
   };
@@ -579,20 +622,22 @@ function viewCalendar() {
     <div class="cal">${['Pt', 'Sa', 'Ça', 'Pe', 'Cu', 'Ct', 'Pz'].map(h => `<div class="h">${h}</div>`).join('')}${cells}</div>
     <div class="legend2"><span><span class="dot ev"></span>Etkinlik</span><span><span class="dot mt"></span>Toplantı kaydı</span><span><span class="dot pt"></span>Söz hedef tarihi</span></div>
     <section class="sheet"><h2>${fmtDate(sel)}</h2>
-      ${it.ev.map(e => `<div class="row2" data-id="${e.id}"><div>${e.time ? `<b>${esc(e.time)}</b> ` : ''}${esc(e.title)} <span class="tag">${esc(e.type)}</span>${e.promiseId && pTitle(e.promiseId) ? ` <span class="tag">${esc(pTitle(e.promiseId))}</span>` : ''}${e.note ? `<div class="hint">${esc(e.note)}</div>` : ''}</div>
+      ${it.ev.map(e => `<div class="row2" data-id="${e.id}"><div>${e.time ? `<b>${esc(e.time)}</b> ` : ''}${esc(e.title)} <span class="tag">${esc(e.type)}</span>${e.repeat ? ` <span class="tag">${REPEATS[e.repeat]}</span>` : ''}${e.promiseId && pTitle(e.promiseId) ? ` <span class="tag">${esc(pTitle(e.promiseId))}</span>` : ''}${e.note ? `<div class="hint">${esc(e.note)}</div>` : ''}</div>
         <div>${IB('editev', 'pencil', 'Düzenle')}${IB('delev', 'trash', 'Sil', 'danger')}</div></div>`).join('')}
       ${it.mt.map(() => `<div class="row2"><div><span class="dot mt"></span>Sınıf temsilcileri toplantı kaydı var</div><button class="btn sm" data-tab="meetings">Aç</button></div>`).join('')}
       ${it.pt.map(p => `<div class="row2"><div><span class="dot pt"></span>Hedef tarih: ${esc(p.title)}</div></div>`).join('')}
       ${empty ? '<p class="hint">Bu gün için kayıt yok.</p>' : ''}</section>`;
 }
 function eventForm(e, date) {
-  const x = e || { title: '', date: date || today(), time: '', type: EVENT_TYPES[0], promiseId: '', note: '' };
+  const x = e || { title: '', date: date || today(), time: '', type: EVENT_TYPES[0], promiseId: '', note: '', repeat: '', until: '' };
   return `<form method="dialog" data-form="event" data-id="${e ? e.id : ''}">
     <h2>${e ? 'Etkinliği düzenle' : 'Yeni etkinlik'}</h2>
     <label>Başlık<input name="title" required value="${esc(x.title)}"></label>
     <label>Tarih<input type="date" name="date" required value="${esc(x.date)}"></label>
     <label>Saat<input type="time" name="time" value="${esc(x.time)}"></label>
     <label>Tür<select name="type">${EVENT_TYPES.map(s => `<option${s === x.type ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
+    <label>Tekrar<select name="repeat"><option value="">Tekrarlanmaz</option>${Object.entries(REPEATS).map(([k, l]) => `<option value="${k}"${k === x.repeat ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label>Tekrar bitişi <span class="hint">(boş bırakırsan süresiz sürer)</span><input type="date" name="until" value="${esc(x.until)}"></label>
     <label>İlgili söz<select name="promiseId"><option value="">Yok</option>${state.promises.map(p => `<option value="${p.id}"${p.id === x.promiseId ? ' selected' : ''}>${esc(p.title)}</option>`).join('')}</select></label>
     <label>Not<textarea name="note">${esc(x.note)}</textarea></label>
     <div class="actions">${B('close', 'Vazgeç', '', 'type="button"')}<button class="btn pri" value="ok">Kaydet</button></div>
@@ -627,6 +672,7 @@ function meetingForm(m) {
     <label>Tarih<input type="date" name="date" required value="${esc(x.date)}"></label>
     <label>Katılımcılar <span class="hint">(öğrenci adı yazmak zorunda değilsin; ör. "9-A, 10-B temsilcileri")</span><input name="attendees" value="${esc(x.attendees)}"></label>
     <label>Görüşülen konular<textarea name="topics">${esc(x.topics)}</textarea></label>
+    ${B('agenda', 'Açık işlerden gündem oluştur', 'sm', 'type="button" style="margin-top:6px"')}
     <label>Alınan kararlar<textarea name="decisions">${esc(x.decisions)}</textarea></label>
     <label>Yapılacaklar</label>
     <div id="rows">${x.actions.map(actionRow).join('')}</div>
@@ -707,7 +753,102 @@ function publicBody() {
 function viewPublic() {
   return `<div class="vh"><h1>Seçim sözlerimiz</h1></div>
     <div class="pubnote"><span>Öğrencilerin göreceği salt okunur görünüm bu. Notlar, sorumlular, bütçe ve toplantılar gösterilmez.</span>
-      ${B('snapshot', ic('down') + 'Paylaşmak için indir', 'pri sm')}</div>${publicBody()}`;
+      <div class="tools">${B('snapshot', ic('down') + 'Web sayfası olarak indir', 'pri sm')}${B('sharecard', ic('img') + 'Instagram görseli', 'sm')}${B('poster', ic('print') + 'Panoya yazdır (A4)', 'sm')}</div></div>${publicBody()}`;
+}
+function printPoster() {
+  $('#printSheet').innerHTML = `<div class="poster"><h1>Seçim sözlerimiz</h1><p class="sub">${fmtDate(today())} itibarıyla</p>${publicBody()}</div>`;
+  window.print();
+}
+// 1080 px genişliğinde paylaşılabilir görsel: optik form + cetvel
+async function shareCard() {
+  await Promise.all(['750 60px "Bricolage Grotesque"', '400 30px "Atkinson Hyperlegible Next"', '700 30px "Atkinson Hyperlegible Next"'].map(f => document.fonts.load(f)));
+  const ps = state.promises, n = ps.length, done = ps.filter(p => p.status === 'Tamamlandı').length;
+  const avg = n ? Math.round(ps.reduce((a, p) => a + p.progress, 0) / n) : 0;
+  const W = 1080, ROW = 88, H = Math.max(1350, 520 + n * ROW + 170);
+  const INK = '#14213D', MUTE = '#59637A', RULE = '#D5DBE6', BLUE = '#2142C8', DISP = '"Bricolage Grotesque"', BODY = '"Atkinson Hyperlegible Next"';
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#F5F6F8'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#E7EBF2'; g.lineWidth = 2;
+  for (let x = 0; x <= W; x += 36) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = 0; y <= H; y += 36) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  const T = (s, x, y, font, color, align = 'left') => { g.font = font; g.fillStyle = color; g.textAlign = align; g.textBaseline = 'alphabetic'; g.fillText(s, x, y); };
+  const wrap = (s, max, font) => {
+    g.font = font; const words = s.split(' '), lines = []; let cur = '';
+    for (const w of words) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width > max && cur) { lines.push(cur); cur = w; } else cur = t; }
+    lines.push(cur); return lines.slice(0, 2);
+  };
+  T('Öğrenci Meclisi', 72, 120, `700 46px ${DISP}`, MUTE);
+  T('Seçim sözlerimiz', 72, 235, `750 110px ${DISP}`, INK);
+  T(`${n} sözden ${done} tanesi tamamlandı`, 72, 320, `700 50px ${DISP}`, INK);
+  T(`%${avg}`, 1008, 320, `750 50px ${DISP}`, INK, 'right');
+  const x0 = 72, w = 936;
+  g.fillStyle = RULE; g.fillRect(x0, 392, w, 22);
+  g.fillStyle = BLUE; g.fillRect(x0, 392, w * avg / 100, 22);
+  g.fillStyle = INK; for (let i = 0; i <= 20; i++) g.fillRect(x0 + w * i / 20 - 1, 354, 2, i % 2 === 0 ? 32 : 18);
+  const bx0 = 1008 - 5 * 56 - 4 * 12;
+  ps.forEach((p, i) => {
+    const y = 470 + i * ROW;
+    g.strokeStyle = RULE; g.lineWidth = 2; g.beginPath(); g.moveTo(72, y); g.lineTo(1008, y); g.stroke();
+    T(String(i + 1), 104, y + 54, `700 30px ${DISP}`, MUTE, 'right');
+    const lines = wrap(p.title, bx0 - 130 - 24, `400 32px ${BODY}`);
+    lines.forEach((l, k) => T(l, 130, lines.length === 1 ? y + 55 : y + 38 + k * 38, `400 32px ${BODY}`, INK));
+    STATUSES.forEach((s, k) => {
+      const cx = bx0 + 28 + k * 68, cy = y + 44, sel = STATUSES.indexOf(p.status) === k;
+      g.beginPath(); g.arc(cx, cy, 26, 0, Math.PI * 2);
+      if (sel) { g.fillStyle = INK; g.fill(); } else { g.strokeStyle = INK; g.lineWidth = 3; g.stroke(); }
+      T(LETTERS[k], cx, cy + 9, `700 24px ${BODY}`, sel ? '#F5F6F8' : MUTE, 'center');
+    });
+  });
+  T(STATUSES.slice(0, 3).map((s, k) => `${LETTERS[k]} ${s}`).join('     '), 72, H - 100, `400 28px ${BODY}`, MUTE);
+  T(STATUSES.slice(3).map((s, k) => `${LETTERS[k + 3]} ${s}`).join('     '), 72, H - 60, `400 28px ${BODY}`, MUTE);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  if (!blob) throw new Error('Görsel oluşturulamadı.');
+  download('secim-sozlerimiz.png', blob, 'image/png');
+}
+
+/* ---------- Haftalık rapor ---------- */
+function reportData() {
+  const t = today(), horizon = ymd(addDays(new Date(), 14)), since = Date.now() - 7 * 864e5, sinceD = ymd(addDays(new Date(), -7));
+  const ps = state.promises, n = ps.length, done = ps.filter(p => p.status === 'Tamamlandı').length;
+  const avg = n ? Math.round(ps.reduce((a, p) => a + p.progress, 0) / n) : 0;
+  const changes = ps.flatMap(p => p.notes.filter(x => x.t >= since && x.text.startsWith('Durum değişti')).map(x => ({ p, text: x.text.replace('Durum değişti: ', '') })));
+  const sections = [], add = (title, lines) => { if (lines.length) sections.push({ title, lines }); };
+  add('Bu hafta tamamlananlar', changes.filter(c => c.text.endsWith('→ Tamamlandı')).map(c => c.p.title));
+  add('Bu hafta durumu değişenler', changes.filter(c => !c.text.endsWith('→ Tamamlandı')).map(c => `${c.p.title}: ${c.text}`));
+  add('Bu hafta eklenen notlar', ps.flatMap(p => p.notes.filter(x => x.t >= since && !x.text.startsWith('Durum değişti')).map(x => `${p.title}: ${x.text}`)));
+  add('Bu haftaki toplantılar', state.meetings.filter(m => m.date >= sinceD && m.date <= t).map(m => `${fmtDate(m.date)}${m.topics ? ': ' + m.topics.split('\n')[0] : ''}`));
+  add('Bu hafta alınan kararlar', state.decisions.filter(d => d.date >= sinceD && d.date <= t).map(d => d.text));
+  add('Geciken sözler', ps.filter(isLate).map(p => `${p.title} (${rel(p.target)})`));
+  add('İdare onayı bekleyenler', ps.filter(p => p.status === 'İdare onayı bekleniyor').map(p => p.title));
+  add('Önümüzdeki 14 gün', [
+    ...eventsBetween(t, horizon).map(e => ({ date: e.date, time: e.time, text: `${fmtDate(e.date)}${e.time ? ' ' + e.time : ''}: ${e.title}` })),
+    ...ps.filter(p => isOpen(p) && p.target >= t && p.target <= horizon).map(p => ({ date: p.target, text: `${fmtDate(p.target)}: ${p.title} (hedef tarih)` }))
+  ].sort(byDate).map(x => x.text));
+  add('Açık görevler', state.meetings.flatMap(m => m.actions.filter(a => !a.done).map(a => a.text + (a.promiseId && pTitle(a.promiseId) ? ` (${pTitle(a.promiseId)})` : ''))));
+  return {
+    range: `${fmtDate(sinceD)} – ${fmtDate(t)}`,
+    head: `${n} sözden ${done} tanesi tamamlandı, genel ilerleme %${avg}.`,
+    counts: STATUSES.map(s => `${s}: ${ps.filter(p => p.status === s).length}`).join(', '),
+    sections
+  };
+}
+function viewReport() {
+  const r = reportData();
+  return `<div class="vh"><h1>Haftalık rapor</h1><div class="tools">${B('reportcopy', ic('copy') + 'Metni kopyala')}${B('reportprint', ic('print') + 'Yazdır', 'pri')}</div></div>
+    <p class="hint" style="margin:-6px 0 14px">${r.range}. Notlarından, toplantılarından ve kararlarından otomatik oluşur; müdüre ya da rehber öğretmene göndermek için kullanabilirsin.</p>
+    <section class="sheet"><h2>Genel durum</h2><p>${esc(r.head)}</p><p class="hint" style="margin-top:4px">${esc(r.counts)}</p></section>
+    ${r.sections.map(s => `<section class="sheet"><h2>${s.title}</h2>${s.lines.map(l => `<div class="row2"><div>${esc(l)}</div></div>`).join('')}</section>`).join('')}`;
+}
+function printReport() {
+  const r = reportData();
+  $('#printSheet').innerHTML = `<h1>Öğrenci Meclisi Haftalık Rapor</h1><div class="sub">${r.range}</div><p>${esc(r.head)}</p><p>${esc(r.counts)}</p>` +
+    r.sections.map(s => `<h2>${s.title}</h2><ul>${s.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`).join('');
+  window.print();
+}
+function reportText() {
+  const r = reportData();
+  return `Öğrenci Meclisi haftalık rapor (${r.range})\n\n${r.head}\n${r.counts}\n\n` + r.sections.map(s => `${s.title}\n${s.lines.map(l => '- ' + l).join('\n')}`).join('\n\n');
 }
 function downloadSnapshot() {
   let css = $('#css').textContent;
@@ -722,7 +863,7 @@ function downloadSnapshot() {
 /* ---------- Yedek ---------- */
 function download(name, text, type) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: type + ';charset=utf-8' }));
+  a.href = URL.createObjectURL(text instanceof Blob ? text : new Blob([text], { type: type + ';charset=utf-8' }));
   a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
@@ -738,13 +879,18 @@ function renderNav() {
   $('#more').innerHTML = SECOND.map(k => navBtn(k)).join('') + toolBtns();
   $('#more').hidden = !ui.more;
 }
-const VIEWS = { today: viewToday, promises: viewPromises, calendar: viewCalendar, meetings: viewMeetings, decisions: viewDecisions, ideas: viewIdeas, public: viewPublic, search: viewSearch };
+const VIEWS = { today: viewToday, promises: viewPromises, calendar: viewCalendar, meetings: viewMeetings, decisions: viewDecisions, ideas: viewIdeas, report: viewReport, public: viewPublic, search: viewSearch };
 function render() {
   const pub = tab === 'public' && location.hash === '#ogrenci';
   document.body.classList.toggle('pub', pub);
   $('#nav').hidden = pub; $('.sbtn').hidden = pub;
   if (pub) $('#more').hidden = true; else renderNav();
   $('#main').innerHTML = VIEWS[tab]() + (pub ? `<p>${B('admin', 'Yönetici görünümüne dön', 'sm')}</p>` : '');
+  if (ui.celebrate) {
+    const host = document.querySelector(`#main [data-id="${ui.celebrate}"]`);
+    ui.celebrate = null;
+    if (host) host.insertAdjacentHTML('beforeend', TICK);
+  }
 }
 function go(t) {
   tab = t; ui.q = ''; ui.more = false;
@@ -780,6 +926,20 @@ document.addEventListener('click', e => {
     case 'import': $('#file').click(); break;
     case 'print': printDecisions(); break;
     case 'snapshot': downloadSnapshot(); break;
+    case 'poster': printPoster(); break;
+    case 'sharecard': shareCard(); break;
+    case 'reportprint': printReport(); break;
+    case 'reportcopy': navigator.clipboard.writeText(reportText()).then(() => toast('Rapor kopyalandı.')); break;
+    case 'agenda': {
+      const L = [], sect = (title, a) => { if (a.length) L.push(title + ':\n' + a.map(x => '- ' + x).join('\n')); };
+      sect('Geciken sözler', state.promises.filter(isLate).map(x => x.title));
+      sect('İdare onayı bekleyenler', state.promises.filter(x => x.status === 'İdare onayı bekleniyor').map(x => x.title));
+      sect('Devam eden sözler', state.promises.filter(x => x.status === 'Devam ediyor').map(x => `${x.title} (%${x.progress})`));
+      sect('Önceki toplantılardan açık görevler', state.meetings.flatMap(mm => mm.actions.filter(x => !x.done).map(x => x.text)));
+      if (!L.length) { toast('Gündeme eklenecek açık iş yok.'); break; }
+      const ta = dlg.querySelector('[name=topics]');
+      ta.value = (ta.value.trim() ? ta.value.trim() + '\n\n' : '') + L.join('\n\n');
+    } break;
     case 'admin': history.replaceState(null, '', location.pathname); go('today'); break;
     /* sözler */
     case 'setstatus':
@@ -902,7 +1062,7 @@ dlg.addEventListener('submit', e => {
     const d = id && find(state.decisions, id);
     if (d) Object.assign(d, data); else state.decisions.push({ id: uid(), ...data });
   } else if (kind === 'event') {
-    const data = { title: fd.get('title').trim(), date: fd.get('date'), time: fd.get('time'), type: fd.get('type'), promiseId: fd.get('promiseId'), note: fd.get('note').trim() };
+    const data = { title: fd.get('title').trim(), date: fd.get('date'), time: fd.get('time'), type: fd.get('type'), promiseId: fd.get('promiseId'), note: fd.get('note').trim(), repeat: fd.get('repeat'), until: fd.get('until') };
     const ev = id && find(state.events, id);
     if (ev) Object.assign(ev, data); else state.events.push({ id: uid(), ...data });
     ui.calSel = data.date; const dt = parse(data.date); ui.cal = { y: dt.getFullYear(), m: dt.getMonth() };
